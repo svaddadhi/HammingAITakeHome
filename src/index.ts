@@ -2,17 +2,22 @@ import Server from "./server.js";
 import { CallManager } from "./call-manager/client.js";
 import { WebhookHandler } from "./webhook/index.js";
 import { DiscoveryOrchestrator } from "./orchestrator/discoveryOrchestrator.js";
+import { TranscriptionService } from "./transcription/transcriptionService.js";
 import logger from "./utils/logger.js";
 
 async function startServer() {
   try {
-    // Initialize CallManager
+    // Initialize services
     const callManager = new CallManager(
       process.env.BASE_URL!,
       process.env.API_TOKEN!
     );
 
-    // Initialize DiscoveryOrchestrator with configuration
+    const transcriptionService = new TranscriptionService(
+      process.env.DEEPGRAM_API_KEY!
+    );
+
+    // Initialize orchestrator
     const orchestrator = new DiscoveryOrchestrator(callManager, {
       maxDepth: 5,
       maxConcurrentCalls: 3,
@@ -21,8 +26,12 @@ async function startServer() {
       webhookUrl: process.env.WEBHOOK_URL!,
     });
 
-    // Initialize WebhookHandler with both dependencies
-    const webhookHandler = new WebhookHandler(callManager, orchestrator);
+    // Initialize webhook handler with all dependencies
+    const webhookHandler = new WebhookHandler(
+      callManager,
+      orchestrator,
+      transcriptionService
+    );
 
     // Initialize and configure server
     const server = new Server(Number(process.env.PORT) || 3000);

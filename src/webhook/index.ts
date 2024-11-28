@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { CallManager } from "../call-manager/client.js";
 import { DiscoveryOrchestrator } from "../orchestrator/discoveryOrchestrator.js";
+import { TranscriptionService } from "../transcription/transcriptionService.js";
 import logger from "../utils/logger.js";
 
 interface WebhookPayload {
@@ -11,17 +12,24 @@ interface WebhookPayload {
 
 /**
  * WebhookHandler manages incoming notifications about voice agent calls.
- * It coordinates with the DiscoveryOrchestrator to manage the discovery process.
+ * It coordinates with the DiscoveryOrchestrator to manage the discovery process
+ * and uses TranscriptionService to process audio recordings.
  */
 export class WebhookHandler {
   private router: Router;
   private callManager: CallManager;
   private orchestrator: DiscoveryOrchestrator;
+  private transcriptionService: TranscriptionService;
 
-  constructor(callManager: CallManager, orchestrator: DiscoveryOrchestrator) {
+  constructor(
+    callManager: CallManager,
+    orchestrator: DiscoveryOrchestrator,
+    transcriptionService: TranscriptionService
+  ) {
     this.router = Router();
     this.callManager = callManager;
     this.orchestrator = orchestrator;
+    this.transcriptionService = transcriptionService;
     this.configureRoutes();
   }
 
@@ -69,9 +77,6 @@ export class WebhookHandler {
     return body as WebhookPayload;
   }
 
-  /**
-   * Processes webhook notifications and coordinates with the DiscoveryOrchestrator
-   */
   private async processWebhook(payload: WebhookPayload): Promise<void> {
     switch (payload.status) {
       case "completed":
@@ -82,26 +87,30 @@ export class WebhookHandler {
               payload.id
             );
 
-            // Convert the recording to text
-            // TODO: Implement actual transcription
-            const transcribedText = await this.mockTranscribeRecording(
-              recording
-            );
-
-            // Pass to orchestrator for processing
-            await this.orchestrator.handleCallCompleted(
-              payload.id,
-              transcribedText
-            );
-
-            logger.info("Successfully processed completed call", {
+            // Transcribe the recording
+            logger.info("Starting transcription for call", {
               callId: payload.id,
             });
+            const transcriptionResult =
+              await this.transcriptionService.transcribeAudio(recording);
+
+            logger.info("Transcription completed", {
+              callId: payload.id,
+              confidence: transcriptionResult.confidence,
+            });
+
+            // Pass transcribed text to orchestrator for processing
+            await this.orchestrator.handleCallCompleted(
+              payload.id,
+              transcriptionResult.text
+            );
           } catch (error) {
-            logger.error("Failed to process completed call", {
+            logger.error("Failed to process recording", {
               error: error instanceof Error ? error.message : "Unknown error",
               callId: payload.id,
             });
+
+            await this.orchestrator.handleCallFailed(payload.id);
           }
         }
         break;
@@ -112,22 +121,12 @@ export class WebhookHandler {
 
       case "initiated":
       case "in-progress":
-        // Log status update
         logger.info("Call status update", {
           callId: payload.id,
           status: payload.status,
         });
         break;
     }
-  }
-
-  /**
-   * Temporary mock implementation of transcription
-   * TODO: Replace with actual transcription service
-   */
-  private async mockTranscribeRecording(recording: Blob): Promise<string> {
-    // Mock response for testing
-    return "Thank you for calling. How can I help you today?";
   }
 
   public getRouter(): Router {

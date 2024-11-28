@@ -18,6 +18,7 @@ interface CallNode {
   timestamp: Date;
   depth: number;
   potentialPaths?: string[];
+  retryCount: number;
 }
 
 /**
@@ -58,6 +59,7 @@ export class ConversationTree {
       parentId: null,
       timestamp: new Date(),
       depth: 0,
+      retryCount: 0,
     };
 
     this.rootNode = rootNode;
@@ -98,6 +100,7 @@ export class ConversationTree {
       parentId: parentId,
       timestamp: new Date(),
       depth: parentNode.depth + 1,
+      retryCount: 0,
     };
 
     parentNode.children.push(newNode);
