@@ -1,6 +1,5 @@
 import logger from "../utils/logger.js";
 
-// First, bring in our types
 enum NodeStatus {
   UNEXPLORED = "unexplored",
   IN_PROGRESS = "in-progress",
@@ -225,5 +224,13 @@ export class ConversationTree {
       maxDepthReached,
       maxAllowedDepth: this.maxDepth,
     };
+  }
+
+  /**
+   * Gets all nodes in the tree
+   * @returns Array of all nodes
+   */
+  public getAllNodes(): CallNode[] {
+    return Array.from(this.nodes.values());
   }
 }

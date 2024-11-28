@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { CallManager } from "../call-manager/client.js";
+import { DiscoveryOrchestrator } from "../orchestrator/discoveryOrchestrator.js";
 import logger from "../utils/logger.js";
 
 interface WebhookPayload {
@@ -10,39 +11,26 @@ interface WebhookPayload {
 
 /**
  * WebhookHandler manages incoming notifications about voice agent calls.
- * It processes status updates and coordinates with CallManager to retrieve
- * recordings when they become available.
+ * It coordinates with the DiscoveryOrchestrator to manage the discovery process.
  */
 export class WebhookHandler {
   private router: Router;
   private callManager: CallManager;
+  private orchestrator: DiscoveryOrchestrator;
 
-  constructor(callManager: CallManager) {
+  constructor(callManager: CallManager, orchestrator: DiscoveryOrchestrator) {
     this.router = Router();
     this.callManager = callManager;
-
+    this.orchestrator = orchestrator;
     this.configureRoutes();
   }
 
-  /**
-   * Configures the routes for handling webhook notifications.
-   * Currently sets up a single POST endpoint for receiving updates.
-   * @private
-   */
   private configureRoutes(): void {
-    // Handle incoming webhook notifications
     this.router.post("/callback", this.handleWebhook.bind(this));
   }
 
-  /**
-   * Handles incoming webhook notifications about call status changes.
-   * When a recording becomes available, it triggers the retrieval process.
-   * @param req - Express request object containing the webhook payload
-   * @param res - Express response object
-   */
   private async handleWebhook(req: Request, res: Response): Promise<void> {
     try {
-      // Validate the webhook payload
       const payload = this.validatePayload(req.body);
 
       logger.info("Received webhook notification", {
@@ -51,9 +39,10 @@ export class WebhookHandler {
         recordingAvailable: payload.recording_available,
       });
 
-      // Process the webhook based on call status
+      // Process webhook based on status
       await this.processWebhook(payload);
 
+      // Send immediate acknowledgment
       res.status(200).json({ received: true });
     } catch (error) {
       logger.error("Error processing webhook", {
@@ -61,27 +50,17 @@ export class WebhookHandler {
         body: req.body,
       });
 
-      // Send error response
       res.status(400).json({
         error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   }
 
-  /**
-   * Validates the incoming webhook payload matches our expected structure
-   * @param body - Raw webhook payload
-   * @returns Validated WebhookPayload
-   * @throws Error if payload is invalid
-   * @private
-   */
   private validatePayload(body: any): WebhookPayload {
-    // Perform basic validation of required fields
     if (!body?.id || !body?.status) {
       throw new Error("Invalid webhook payload: missing required fields");
     }
 
-    // Validate status is one of our expected values
     const validStatuses = ["initiated", "in-progress", "completed", "failed"];
     if (!validStatuses.includes(body.status)) {
       throw new Error(`Invalid status: ${body.status}`);
@@ -91,56 +70,66 @@ export class WebhookHandler {
   }
 
   /**
-   * Processes webhook notifications based on call status and recording availability
-   * @param payload - Validated webhook payload
-   * @private
+   * Processes webhook notifications and coordinates with the DiscoveryOrchestrator
    */
   private async processWebhook(payload: WebhookPayload): Promise<void> {
     switch (payload.status) {
       case "completed":
         if (payload.recording_available) {
           try {
-            // Retrieve the recording when it's available
+            // Retrieve the recording
             const recording = await this.callManager.retrieveRecording(
               payload.id
             );
-            logger.info("Successfully retrieved recording", {
-              callId: payload.id,
-              size: recording.size,
-            });
 
-            // Here is where to pass the recording to the analysis system
-            // For now, just log that we got it
-            // TODO: Add call to analysis system when implemented
+            // Convert the recording to text
+            // TODO: Implement actual transcription
+            const transcribedText = await this.mockTranscribeRecording(
+              recording
+            );
+
+            // Pass to orchestrator for processing
+            await this.orchestrator.handleCallCompleted(
+              payload.id,
+              transcribedText
+            );
+
+            logger.info("Successfully processed completed call", {
+              callId: payload.id,
+            });
           } catch (error) {
-            logger.error("Failed to retrieve recording", {
+            logger.error("Failed to process completed call", {
               error: error instanceof Error ? error.message : "Unknown error",
               callId: payload.id,
             });
-            // Might want to implement retry logic here
           }
         }
         break;
 
       case "failed":
-        logger.error("Call failed", {
-          callId: payload.id,
-        });
-        // Might want to implement retry logic or alert monitoring
+        await this.orchestrator.handleCallFailed(payload.id);
         break;
 
-      default:
+      case "initiated":
+      case "in-progress":
+        // Log status update
         logger.info("Call status update", {
           callId: payload.id,
           status: payload.status,
         });
+        break;
     }
   }
 
   /**
-   * Returns the configured router for use with Express
-   * @returns Express Router instance
+   * Temporary mock implementation of transcription
+   * TODO: Replace with actual transcription service
    */
+  private async mockTranscribeRecording(recording: Blob): Promise<string> {
+    // Mock response for testing
+    return "Thank you for calling. How can I help you today?";
+  }
+
   public getRouter(): Router {
     return this.router;
   }
