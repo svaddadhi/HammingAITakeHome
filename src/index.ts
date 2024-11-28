@@ -1,6 +1,6 @@
-import Server from "./server";
+import Server from "./server.js";
 import { CallManager } from "./call-manager/client.js";
-import { WebhookHandler } from "./webhook/webhookHandler.js";
+import { WebhookHandler } from "./webhook/index.js";
 import logger from "./utils/logger.js";
 
 async function startServer() {
