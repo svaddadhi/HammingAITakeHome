@@ -1,3 +1,4 @@
+import "dotenv/config.js";
 import Server from "./server.js";
 import { CallManager } from "./call-manager/client.js";
 import { WebhookHandler } from "./webhook/index.js";
@@ -5,7 +6,26 @@ import { DiscoveryOrchestrator } from "./orchestrator/discoveryOrchestrator.js";
 import { TranscriptionService } from "./transcription/transcriptionService.js";
 import logger from "./utils/logger.js";
 
+function validateEnvironmentVariables() {
+  const required = [
+    "BASE_URL",
+    "API_TOKEN",
+    "DEEPGRAM_API_KEY",
+    "TARGET_PHONE_NUMBER",
+    "WEBHOOK_URL",
+  ];
+
+  const missing = required.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missing.join(", ")}`
+    );
+  }
+}
+
 async function startServer() {
+  validateEnvironmentVariables();
+
   try {
     // Initialize services
     const callManager = new CallManager(

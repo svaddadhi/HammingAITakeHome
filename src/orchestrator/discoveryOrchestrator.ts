@@ -2,6 +2,7 @@ import logger from "../utils/logger.js";
 import { CallManager } from "../call-manager/client.js";
 import { ConversationTree } from "../discovery/conversationTree.js";
 import { ResponseAnalyzer } from "../analyzer/responseAnalyzer.js";
+import { ProgressVisualizer } from "../visualization/progressVisualizer.js";
 
 interface DiscoveryConfig {
   maxDepth: number;
@@ -31,12 +32,14 @@ export class DiscoveryOrchestrator {
   private readonly config: DiscoveryConfig;
   private state: DiscoveryState;
   private readonly MAX_RETRY_ATTEMPTS = 3;
+  private readonly visualizer: ProgressVisualizer;
 
   constructor(callManager: CallManager, config: DiscoveryConfig) {
     this.callManager = callManager;
     this.config = config;
     this.conversationTree = new ConversationTree(config.maxDepth);
     this.responseAnalyzer = new ResponseAnalyzer();
+    this.visualizer = new ProgressVisualizer();
 
     this.state = {
       isRunning: false,
@@ -119,6 +122,14 @@ export class DiscoveryOrchestrator {
       this.state.activeCallCount--;
       this.state.completedCallCount++;
       this.state.lastUpdateTimestamp = new Date();
+
+      // Add visualization
+      this.visualizer.visualizeTree(this.conversationTree);
+      this.visualizer.visualizeProgress(this.state);
+      this.visualizer.logConversationEvent(node.id, "Call Completed", {
+        response: response.substring(0, 100),
+        potentialPaths: potentialPaths.length,
+      });
 
       // Explore new paths if available
       await this.exploreNextPaths();
@@ -217,6 +228,10 @@ export class DiscoveryOrchestrator {
           this.conversationTree.addNode(node.id, nextPrompt, callId);
           this.state.activeCallCount++;
           this.state.lastUpdateTimestamp = new Date();
+
+          // Add visualization update
+          this.visualizer.visualizeTree(this.conversationTree);
+          this.visualizer.visualizeProgress(this.state);
 
           logger.info("Started exploration of new path", {
             parentNodeId: node.id,

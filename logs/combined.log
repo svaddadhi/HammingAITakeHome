@@ -1,0 +1,8 @@
+{"level":"info","message":"Route added: /webhook","timestamp":"2024-11-29T00:26:48.432Z"}
+{"level":"info","message":"Server is running on port 3000","timestamp":"2024-11-29T00:26:48.434Z"}
+{"level":"info","maxConcurrentCalls":3,"maxDepth":5,"message":"Starting discovery process","phoneNumber":"+14153580761","timestamp":"2024-11-29T00:26:48.435Z"}
+{"level":"info","message":"Initiating voice agent call","phoneNumber":"+14153580761","timestamp":"2024-11-29T00:26:48.435Z","webhookUrl":"http://localhost:3000/webhook/callback"}
+{"callId":"cm420784b003l20s5f1bx7k9g","level":"info","message":"Call initiated successfully","phoneNumber":"+14153580761","timestamp":"2024-11-29T00:26:48.965Z"}
+{"callId":"cm420784b003l20s5f1bx7k9g","level":"info","message":"Conversation tree initialized with root node","nodeId":"root","timestamp":"2024-11-29T00:26:48.966Z"}
+{"callId":"cm420784b003l20s5f1bx7k9g","level":"info","message":"Initial call placed, awaiting response","timestamp":"2024-11-29T00:26:48.967Z"}
+{"level":"info","message":"Application started successfully","timestamp":"2024-11-29T00:26:48.967Z"}
