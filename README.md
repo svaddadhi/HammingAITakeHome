@@ -187,3 +187,8 @@ Logs are written to:
 - 10-minute maximum call duration
 - Requires stable internet connection
 - Webhook endpoint must be publicly accessible
+
+
+## System Architecture Diagram
+<img width="781" alt="image" src="https://github.com/user-attachments/assets/b1c87d4a-d913-4549-ab8f-4b2922691036">
+
