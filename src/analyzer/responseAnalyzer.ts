@@ -101,9 +101,6 @@ export class ResponseAnalyzer {
     }
   }
 
-  /**
-   * Updates the conversation context based on agent's response
-   */
   private updateConversationContext(response: string): void {
     const requestedInfo = ResponseAnalyzer.INFO_REQUEST_PATTERNS.filter(
       ({ pattern }) => pattern.test(response.toLowerCase())
@@ -125,9 +122,6 @@ export class ResponseAnalyzer {
     }
   }
 
-  /**
-   * Extracts services mentioned in the response
-   */
   private extractDiscussedServices(response: string): string[] {
     const services = new Set<string>();
     const normalizedResponse = response.toLowerCase();
@@ -175,9 +169,6 @@ export class ResponseAnalyzer {
     return Array.from(services);
   }
 
-  /**
-   * Generates contextual prompts based on the conversation history
-   */
   private async generateContextualPrompts(response: string): Promise<string[]> {
     const prompts: string[] = [];
 
@@ -198,9 +189,6 @@ export class ResponseAnalyzer {
     return prompts;
   }
 
-  /**
-   * Creates a prompt for exploring paths where customer provides requested info
-   */
   private createInfoProvisionPrompt(): string {
     const requestedInfo = this.context.requestedInfo?.join(" and ") || "";
     return `You are a customer willing to provide ${requestedInfo}.
@@ -211,9 +199,6 @@ When the agent asks:
 Your goal is to understand the full service process when providing customer information.`;
   }
 
-  /**
-   * Creates a prompt for exploring paths where customer prefers not to provide info
-   */
   private createInfoAvoidancePrompt(): string {
     return `You are a customer who prefers not to provide personal information yet.
 When the agent asks:
@@ -223,9 +208,6 @@ When the agent asks:
 Your goal is to understand how the agent handles customers who prefer initial anonymity.`;
   }
 
-  /**
-   * Creates a prompt focused on a specific service
-   */
   private createServiceSpecificPrompt(service: string): string {
     const serviceName = service.replace(/_/g, " ");
     return `You are a customer specifically interested in ${serviceName}.
@@ -237,9 +219,6 @@ When the agent responds:
 Your goal is to fully understand the ${serviceName} offering and requirements.`;
   }
 
-  /**
-   * Generates additional prompts using AI based on the actual conversation
-   */
   private async generateAIPrompts(response: string): Promise<string[]> {
     const prompt = `Based on this ${this.context.businessType} agent's response: "${response}"
 Generate 2-3 different customer scenarios that would:
@@ -254,9 +233,6 @@ Keep scenarios focused and specific to the actual conversation.`;
     });
   }
 
-  /**
-   * Detects the type of business from the response
-   */
   private detectBusinessType(response: string): string {
     const normalizedResponse = response.toLowerCase();
 
@@ -279,9 +255,6 @@ Keep scenarios focused and specific to the actual conversation.`;
     return "general_business";
   }
 
-  /**
-   * Determines if the response indicates end of conversation
-   */
   private isTerminalState(
     response: string,
     hasIdentifiedPaths: boolean
@@ -295,9 +268,6 @@ Keep scenarios focused and specific to the actual conversation.`;
     );
   }
 
-  /**
-   * Creates a default system prompt for error cases
-   */
   private createDefaultSystemPrompt(): string {
     return `You are a customer calling to inquire about available services.
 When the agent answers:
@@ -307,9 +277,6 @@ When the agent answers:
 Your goal is to understand what services they offer.`;
   }
 
-  /**
-   * Calculates confidence score for the analysis
-   */
   private calculateConfidence(
     paths: string[],
     response: string,
