@@ -188,7 +188,110 @@ Logs are written to:
 - Requires stable internet connection
 - Webhook endpoint must be publicly accessible
 
-
 ## System Architecture Diagram
+
 <img width="781" alt="image" src="https://github.com/user-attachments/assets/b1c87d4a-d913-4549-ab8f-4b2922691036">
 
+## Known Issues and Future Improvements
+
+### Current Limitations
+
+1. **Test Suite Issues**
+   - Not all tests are passing
+   - Missing integration tests for full conversation flow
+   - Need more comprehensive error case coverage
+   - Mock service improvements needed
+
+**Fix**:
+
+- Add more test cases for edge scenarios
+- Implement proper cleanup in test teardown
+- Add integration test suite with mock API responses
+- Improve test isolation
+
+2. **Process Termination**
+   - Application doesn't gracefully terminate
+   - No proper cleanup of active calls
+   - Webhook server remains running
+
+**Fix**:
+
+- Implement proper shutdown hooks
+- Add signal handlers (SIGTERM, SIGINT)
+- Clean up active calls before shutdown
+- Close webhook server properly
+
+3. **Memory Management**
+   - Conversation tree can grow indefinitely
+   - No cleanup of completed branches
+   - Potential memory leaks in long-running sessions
+
+**Fix**:
+
+- Implement periodic tree pruning
+- Add memory usage monitoring
+- Implement cleanup for completed conversations
+- Add resource usage limits
+
+4. **Error Recovery**
+   - Limited recovery from API failures
+   - No persistent storage of conversation state
+   - Lost progress on crashes
+
+**Fix**:
+
+- Add persistent storage for conversation tree
+- Implement checkpoint/restore functionality
+- Better error recovery strategies
+- Add session resumption capability
+
+5. **Scalability Issues**
+   - Single instance limitations
+   - No distributed call handling
+   - Local file system logging
+
+**Fix**:
+
+- Implement distributed architecture
+- Add queue-based call handling
+- Use centralized logging service
+- Add horizontal scaling capability
+
+### Future Improvements
+
+1. **Monitoring and Observability**
+
+   - Add comprehensive metrics collection
+   - Implement proper APM integration
+   - Add detailed performance tracking
+   - Better visualization of system state
+
+2. **Voice Agent Analysis**
+
+   - Add sentiment analysis
+   - Implement conversation quality metrics
+   - Add automated test case generation
+   - Better path similarity detection
+
+3. **System Resilience**
+
+   - Add circuit breakers for all external services
+   - Implement proper rate limiting
+   - Add request queuing
+   - Better concurrent call management
+
+4. **Developer Experience**
+   - Add better debugging tools
+   - Improve logging clarity
+   - Add development mode with mock services
+   - Better configuration management
+
+### Implementation Priorities
+
+For immediate stability:
+
+1. Fix test suite (High Priority)
+2. Implement graceful shutdown (High Priority)
+3. Add memory management (Medium Priority)
+4. Improve error recovery (Medium Priority)
+5. Add basic monitoring (Low Priority)
