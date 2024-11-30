@@ -187,9 +187,3 @@ Logs are written to:
 - 10-minute maximum call duration
 - Requires stable internet connection
 - Webhook endpoint must be publicly accessible
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
