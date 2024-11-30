@@ -3,27 +3,28 @@
 import OpenAI from "openai";
 import logger from "./logger.js";
 
-// Initialize OpenAI client with environment variable
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-/**
- * Generates contextual responses for a given prompt using GPT-3.5-turbo
- * Enhanced with better error handling and response validation
- */
 export async function generateResponses(
   prompt: string,
   options: {
     temperature?: number;
     maxResponses?: number;
     businessContext?: string;
+    apiKey?: string;
   } = {}
 ): Promise<string[]> {
-  const { temperature = 0.7, maxResponses = 4 } = options;
+  const {
+    temperature = 0.7,
+    maxResponses = 4,
+    apiKey = process.env.OPENAI_API_KEY,
+  } = options;
+
+  if (!apiKey) {
+    throw new Error("OpenAI API key is missing.");
+  }
+
+  const openai = new OpenAI({ apiKey });
 
   try {
-    // Create a more structured prompt for better response generation
     const enhancedPrompt = `As an AI testing voice response systems, analyze this interaction:
 
 "${prompt}"
@@ -58,7 +59,6 @@ Your responses:`;
       frequency_penalty: 0.4, // Reduce repetition
     });
 
-    // Process and clean up the responses
     const responses =
       completion.choices[0].message.content
         ?.split("\n")
@@ -66,7 +66,6 @@ Your responses:`;
         .filter((line) => line.length > 0 && !line.startsWith("-"))
         .slice(0, maxResponses) ?? [];
 
-    // Validate that we got meaningful responses
     if (responses.length === 0) {
       logger.warn("No responses generated from OpenAI", {
         prompt: prompt.substring(0, 100),
@@ -96,7 +95,7 @@ Your responses:`;
       promptPreview: prompt.substring(0, 100),
     });
 
-    // Return fallback responses rather than empty array
+    // Return fallback responses rather than an empty array
     return [
       "I need some help with a service",
       "Could you tell me about your services?",

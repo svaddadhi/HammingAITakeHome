@@ -2,7 +2,6 @@ import axios, { AxiosResponse } from "axios";
 import axiosRetry from "axios-retry";
 import logger from "../utils/logger.js";
 
-// Configure axios retry logic for resilient API calls
 axiosRetry(axios, {
   retries: 3,
   retryDelay: axiosRetry.exponentialDelay,
@@ -19,21 +18,10 @@ interface CallResponse {
   status?: string;
 }
 
-/**
- * CallManager handles interactions with the voice agent API.
- * It manages initiating calls and retrieving recordings, with built-in
- * retry logic for resilient operation.
- */
 export class CallManager {
   private baseUrl: string;
   private token: string;
 
-  /**
-   * Creates a new instance of CallManager
-   * @param baseUrl - Base URL for the voice agent API
-   * @param token - Authentication token for API access
-   * @throws Error if required parameters are missing
-   */
   constructor(baseUrl: string, token: string) {
     if (!baseUrl || !token) {
       throw new Error("baseUrl and token are required");
@@ -48,14 +36,6 @@ export class CallManager {
     });
   }
 
-  /**
-   * Initiates a call to the voice agent
-   * @param phoneNumber - Target phone number to call
-   * @param systemPrompt - System prompt that guides the voice agent's behavior
-   * @param webhookUrl - URL for receiving call status updates
-   * @returns Promise resolving to the call ID
-   * @throws Error if the call fails to initiate
-   */
   async startCall(
     phoneNumber: string,
     systemPrompt: string,

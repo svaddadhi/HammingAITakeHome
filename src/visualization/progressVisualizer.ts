@@ -1,28 +1,17 @@
-// src/visualization/progressVisualizer.ts
-
 import { ConversationTree } from "../discovery/conversationTree.js";
 import logger from "../utils/logger.js";
-import chalk from "chalk";
+import chalk, { Chalk } from "chalk";
 
 interface VisualizationNode {
   id: string;
-  systemPrompt: string; // Changed from 'prompt' to 'systemPrompt' for clarity
+  systemPrompt: string;
   response: string;
   status: string;
   depth: number;
   children: VisualizationNode[];
 }
 
-/**
- * ProgressVisualizer creates real-time visualizations of our voice agent discovery process.
- * It provides clear, formatted console output showing:
- * - The current conversation tree structure
- * - Active and completed conversation paths
- * - Success rates and exploration metrics
- * - Important events and milestones
- */
 export class ProgressVisualizer {
-  // Characters used to draw the tree structure in the console
   private static readonly TREE_CHARS = {
     vertical: "│",
     horizontal: "──",
@@ -31,7 +20,6 @@ export class ProgressVisualizer {
     bullet: "●",
   };
 
-  // Color coding for different conversation states
   private static readonly STATUS_COLORS = {
     unexplored: chalk.gray,
     "in-progress": chalk.yellow,
@@ -42,16 +30,9 @@ export class ProgressVisualizer {
   private static readonly PROMPT_DISPLAY_LENGTH = Number.MAX_SAFE_INTEGER; // Increased from 60
   private static readonly RESPONSE_DISPLAY_LENGTH = Number.MAX_SAFE_INTEGER;
 
-  /**
-   * Creates a visual representation of the current conversation tree.
-   * This helps us understand how different conversation paths are related
-   * and which areas have been explored.
-   */
   public visualizeTree(tree: ConversationTree): void {
-    // Clear console for fresh visualization
     console.clear();
 
-    // Get the root node and prepare for visualization
     const nodes = tree.getAllNodes();
     const rootNode = nodes.find((node) => node.parentId === null);
 
@@ -60,39 +41,27 @@ export class ProgressVisualizer {
       return;
     }
 
-    // Print header with current timestamp
     console.log(chalk.bold("\n=== Voice Agent Discovery Progress ==="));
     console.log(chalk.dim(`Time: ${new Date().toLocaleString()}\n`));
 
-    // Convert the tree data for visualization
     const visualTree = this.convertToVisualNode(rootNode, nodes);
 
-    // Render the tree structure
     this.renderNode(visualTree, "", true);
 
-    // Print summary statistics
     this.printTreeSummary(tree);
   }
 
-  /**
-   * Shows the current progress of our discovery process, including
-   * active conversations and success metrics.
-   */
   public visualizeProgress(state: any): void {
     console.log(chalk.bold("\n=== Discovery Metrics ==="));
 
-    // Active conversations
     console.log(chalk.yellow(`Active Conversations: ${state.activeCallCount}`));
 
-    // Success metrics
     console.log(
       chalk.green(`Successfully Completed: ${state.completedCallCount}`)
     );
 
-    // Failed attempts
     console.log(chalk.red(`Failed Attempts: ${state.failedCallCount}`));
 
-    // Calculate and show success rate
     const totalAttempts = state.completedCallCount + state.failedCallCount;
     const successRate =
       totalAttempts > 0
@@ -100,7 +69,6 @@ export class ProgressVisualizer {
         : 0;
     console.log(chalk.blue(`Success Rate: ${successRate}%`));
 
-    // Time tracking
     console.log(
       chalk.dim(`Last Update: ${state.lastUpdateTimestamp.toLocaleString()}`)
     );
@@ -123,7 +91,6 @@ export class ProgressVisualizer {
     console.log(eventColor(`\n[${timestamp}] ${event.toUpperCase()}`));
     console.log(chalk.dim(`Node: ${nodeId}`));
 
-    // Format details for better readability
     Object.entries(details).forEach(([key, value]) => {
       if (typeof value === "string") {
         console.log(
@@ -141,9 +108,6 @@ export class ProgressVisualizer {
     console.log(chalk.dim("---"));
   }
 
-  /**
-   * Converts our conversation tree data into a format suitable for visualization.
-   */
   private convertToVisualNode(node: any, allNodes: any[]): VisualizationNode {
     const children = allNodes.filter((n) => n.parentId === node.id);
     return {
@@ -158,9 +122,6 @@ export class ProgressVisualizer {
     };
   }
 
-  /**
-   * Renders a node in the tree visualization with appropriate formatting and colors.
-   */
   private renderNode(
     node: VisualizationNode,
     prefix: string,
@@ -170,13 +131,11 @@ export class ProgressVisualizer {
       ? ProgressVisualizer.TREE_CHARS.corner
       : ProgressVisualizer.TREE_CHARS.junction;
 
-    // Color the node based on its status
     const statusColor =
       ProgressVisualizer.STATUS_COLORS[
         node.status as keyof typeof ProgressVisualizer.STATUS_COLORS
       ] || chalk.white;
 
-    // Render the node with its system prompt
     console.log(
       `${prefix}${connector}${ProgressVisualizer.TREE_CHARS.horizontal}` +
         statusColor(
@@ -187,7 +146,6 @@ export class ProgressVisualizer {
         )
     );
 
-    // Show the response if available
     if (node.response) {
       console.log(
         `${prefix}${isLast ? " " : ProgressVisualizer.TREE_CHARS.vertical}   ` +
@@ -200,7 +158,6 @@ export class ProgressVisualizer {
       );
     }
 
-    // Render child nodes
     const childPrefix =
       prefix +
       (isLast ? "    " : ProgressVisualizer.TREE_CHARS.vertical + "   ");
@@ -209,9 +166,6 @@ export class ProgressVisualizer {
     });
   }
 
-  /**
-   * Prints summary statistics about our discovery progress.
-   */
   private printTreeSummary(tree: ConversationTree): void {
     const summary = tree.getTreeSummary();
 
@@ -224,7 +178,6 @@ export class ProgressVisualizer {
       )
     );
 
-    // Calculate and show completion percentage
     const completionRate = (
       (summary.completedPaths / summary.totalPaths) *
       100
@@ -234,10 +187,7 @@ export class ProgressVisualizer {
     console.log(chalk.dim("======================\n"));
   }
 
-  /**
-   * Gets the appropriate color for different event types.
-   */
-  private getEventColor(event: string): chalk.ChalkFunction {
+  private getEventColor(event: string): (text: string) => string {
     switch (event.toLowerCase()) {
       case "conversation completed":
         return chalk.green;
@@ -250,9 +200,6 @@ export class ProgressVisualizer {
     }
   }
 
-  /**
-   * Truncates text to a specified length while preserving readability.
-   */
   private truncateText(text: string, maxLength: number): string {
     return text.length > maxLength
       ? `${text.substring(0, maxLength - 3)}...`

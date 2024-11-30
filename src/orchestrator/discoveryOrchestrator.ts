@@ -1,5 +1,3 @@
-// src/orchestrator/discoveryOrchestrator.ts
-
 import logger from "../utils/logger.js";
 import { CallManager } from "../call-manager/client.js";
 import { ConversationTree } from "../discovery/conversationTree.js";
@@ -12,6 +10,9 @@ interface DiscoveryConfig {
   initialPrompt: string;
   phoneNumber: string;
   webhookUrl: string;
+  minTimeBetweenCalls: number;
+  maxCallDuration: number;
+  retryDelayMs: number;
 }
 
 interface DiscoveryState {
@@ -20,16 +21,23 @@ interface DiscoveryState {
   completedCallCount: number;
   failedCallCount: number;
   lastUpdateTimestamp: Date;
+  exploredThemes: Set<string>;
+  activeThemes: Set<string>;
+  lastCallTime: number;
 }
 
-/**
- * DiscoveryOrchestrator manages the systematic exploration of voice agent capabilities.
- * It coordinates between different components to:
- * 1. Initiate conversations with different system prompts
- * 2. Process agent responses to identify new paths
- * 3. Build a comprehensive map of possible conversation flows
- * 4. Track exploration progress and manage concurrent calls
- */
+const DEFAULT_CONFIG: DiscoveryConfig = {
+  maxDepth: 5,
+  maxConcurrentCalls: 3,
+  minTimeBetweenCalls: 500,
+  maxCallDuration: 600000, // 10 minutes
+  retryDelayMs: 1000,
+  initialPrompt:
+    "You are a customer calling to learn about available services.",
+  phoneNumber: "",
+  webhookUrl: "",
+};
+
 export class DiscoveryOrchestrator {
   private readonly callManager: CallManager;
   private readonly conversationTree: ConversationTree;
@@ -38,11 +46,25 @@ export class DiscoveryOrchestrator {
   private state: DiscoveryState;
   private readonly visualizer: ProgressVisualizer;
   private readonly MAX_RETRY_ATTEMPTS = 3;
+  private readonly callQueue: Array<{
+    parentId: string;
+    prompt: string;
+    priority: number;
+  }> = [];
 
-  constructor(callManager: CallManager, config: DiscoveryConfig) {
+  constructor(callManager: CallManager, config: Partial<DiscoveryConfig>) {
     this.callManager = callManager;
-    this.config = config;
-    this.conversationTree = new ConversationTree(config.maxDepth);
+
+    if (!config.phoneNumber || !config.webhookUrl) {
+      throw new Error("phoneNumber and webhookUrl are required in config");
+    }
+
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...config,
+    };
+
+    this.conversationTree = new ConversationTree(this.config.maxDepth);
     this.responseAnalyzer = new ResponseAnalyzer();
     this.visualizer = new ProgressVisualizer();
 
@@ -52,14 +74,12 @@ export class DiscoveryOrchestrator {
       completedCallCount: 0,
       failedCallCount: 0,
       lastUpdateTimestamp: new Date(),
+      exploredThemes: new Set(),
+      activeThemes: new Set(),
+      lastCallTime: 0,
     };
   }
 
-  /**
-   * Begins the discovery process by initiating the first conversation
-   * with an initial system prompt. This starts our exploration of the
-   * voice agent's capabilities.
-   */
   public async startDiscovery(): Promise<void> {
     if (this.state.isRunning) {
       throw new Error("Discovery process is already running");
@@ -75,22 +95,13 @@ export class DiscoveryOrchestrator {
       this.state.isRunning = true;
       this.state.lastUpdateTimestamp = new Date();
 
-      // Start with initial conversation
       const initialSystemPrompt = this.createInitialSystemPrompt();
-      const callId = await this.callManager.startCall(
-        this.config.phoneNumber,
-        initialSystemPrompt,
-        this.config.webhookUrl
-      );
+      const callId = await this.initiateCall(initialSystemPrompt);
 
-      // Initialize our conversation tree with this first interaction
       this.conversationTree.initializeRoot(initialSystemPrompt, callId);
       this.state.activeCallCount++;
 
-      logger.info("Initial conversation started", {
-        callId,
-        systemPromptPreview: initialSystemPrompt.substring(0, 50),
-      });
+      this.processCallQueue();
     } catch (error) {
       this.state.isRunning = false;
       logger.error("Failed to start discovery process", {
@@ -100,23 +111,15 @@ export class DiscoveryOrchestrator {
     }
   }
 
-  /**
-   * Creates the initial system prompt that starts our discovery process.
-   * This prompt is designed to elicit information about available services.
-   */
   private createInitialSystemPrompt(): string {
     return `You are a customer making your first call to this business.
 When the agent answers:
 1. Express general interest in learning about their services
-2. Be ready to ask follow-up questions about specific services
+2. Ask clear questions about their primary service offerings
 3. Show interest but avoid committing to any service yet
 Your goal is to understand what services they offer and how they handle initial inquiries.`;
   }
 
-  /**
-   * Processes a completed call by analyzing the response and planning
-   * the next conversations to explore.
-   */
   public async handleCallCompleted(
     callId: string,
     response: string
@@ -127,36 +130,28 @@ Your goal is to understand what services they offer and how they handle initial 
         throw new Error(`No conversation node found for call ${callId}`);
       }
 
-      // Analyze the response to identify new conversation paths to explore
       const analysis = await this.responseAnalyzer.analyzeResponse(response);
-      this.conversationTree.updateNodeWithResponse(
-        node.id,
-        response,
-        analysis.identifiedPaths
-      );
 
-      // Update discovery state
-      this.state.activeCallCount--;
-      this.state.completedCallCount++;
-      this.state.lastUpdateTimestamp = new Date();
+      const newThemes: Set<string> =
+        this.conversationTree.updateNodeWithResponse(
+          node.id,
+          response,
+          analysis.identifiedPaths
+        );
 
-      // Visualize our progress
-      this.visualizer.visualizeTree(this.conversationTree);
-      this.visualizer.visualizeProgress(this.state);
-      this.visualizer.logConversationEvent(node.id, "Conversation Completed", {
-        responsePreview: response.substring(0, 100),
-        newPathsIdentified: analysis.identifiedPaths.length,
-      });
+      this.updateStateAfterCall(newThemes);
 
-      // Continue exploration with newly discovered paths
+      this.updateVisualization(node.id, response, analysis);
+
       if (!analysis.isTerminalState) {
-        await this.exploreNextPaths();
+        this.queueNewPaths(node.id, analysis.identifiedPaths);
       }
 
       logger.info("Successfully processed completed conversation", {
         callId,
         nodeId: node.id,
         newPathsIdentified: analysis.identifiedPaths.length,
+        newThemes: Array.from(newThemes),
         isTerminal: analysis.isTerminalState,
       });
     } catch (error) {
@@ -168,110 +163,163 @@ Your goal is to understand what services they offer and how they handle initial 
     }
   }
 
-  /**
-   * Finds the conversation node associated with a specific call
-   */
+  private async initiateCall(prompt: string): Promise<string> {
+    const now = Date.now();
+    const timeSinceLastCall = now - this.state.lastCallTime;
+
+    if (timeSinceLastCall < this.config.minTimeBetweenCalls) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.config.minTimeBetweenCalls - timeSinceLastCall)
+      );
+    }
+
+    const callId = await this.callManager.startCall(
+      this.config.phoneNumber,
+      prompt,
+      this.config.webhookUrl
+    );
+
+    this.state.lastCallTime = Date.now();
+    return callId;
+  }
+
+  private updateStateAfterCall(newThemes: Set<string>): void {
+    this.state.activeCallCount--;
+    this.state.completedCallCount++;
+    this.state.lastUpdateTimestamp = new Date();
+
+    newThemes.forEach((theme) => this.state.exploredThemes.add(theme));
+
+    newThemes.forEach((theme) => this.state.activeThemes.delete(theme));
+  }
+
+  private updateVisualization(
+    nodeId: string,
+    response: string,
+    analysis: any
+  ): void {
+    this.visualizer.visualizeTree(this.conversationTree);
+    this.visualizer.visualizeProgress(this.state);
+    this.visualizer.logConversationEvent(nodeId, "Conversation Completed", {
+      responsePreview: response.substring(0, 100),
+      newPathsIdentified: analysis.identifiedPaths.length,
+      exploredThemes: Array.from(this.state.exploredThemes),
+      activeThemes: Array.from(this.state.activeThemes),
+    });
+  }
+
+  private queueNewPaths(parentId: string, paths: string[]): void {
+    paths.forEach((prompt, index) => {
+      const priority = this.calculatePathPriority(prompt);
+      this.callQueue.push({ parentId, prompt, priority });
+    });
+
+    this.callQueue.sort((a, b) => b.priority - a.priority);
+  }
+
+  private calculatePathPriority(prompt: string): number {
+    let priority = 0;
+
+    const promptThemes = this.extractThemes(prompt);
+    const newThemes = Array.from(promptThemes).filter(
+      (theme) => !this.state.exploredThemes.has(theme)
+    );
+    priority += newThemes.length * 2;
+
+    if (prompt.toLowerCase().includes("emergency")) {
+      priority += 3;
+    }
+
+    const activeThemeOverlap = Array.from(promptThemes).filter((theme) =>
+      this.state.activeThemes.has(theme)
+    );
+    priority -= activeThemeOverlap.length;
+
+    return priority;
+  }
+
+  private async processCallQueue(): Promise<void> {
+    if (!this.state.isRunning) return;
+
+    try {
+      while (
+        this.state.activeCallCount < this.config.maxConcurrentCalls &&
+        this.callQueue.length > 0
+      ) {
+        const nextCall = this.callQueue.shift();
+        if (!nextCall) break;
+
+        try {
+          const callId = await this.initiateCall(nextCall.prompt);
+          const newNode = this.conversationTree.addNode(
+            nextCall.parentId,
+            nextCall.prompt,
+            callId
+          );
+
+          this.state.activeCallCount++;
+          this.updateActiveThemes(nextCall.prompt);
+        } catch (error) {
+          logger.error("Failed to initiate queued call", {
+            error: error instanceof Error ? error.message : "Unknown error",
+            prompt: nextCall.prompt.substring(0, 50),
+          });
+
+          if (this.shouldRetryCall(nextCall)) {
+            this.callQueue.push({
+              ...nextCall,
+              priority: nextCall.priority - 1,
+            });
+          }
+        }
+      }
+    } finally {
+      // Schedule next queue processing
+      setTimeout(
+        () => this.processCallQueue(),
+        this.config.minTimeBetweenCalls
+      );
+    }
+  }
+
+  private shouldRetryCall(call: { prompt: string; priority: number }): boolean {
+    return call.priority > -2; // Allow up to 3 retries with decreasing priority
+  }
+
+  private updateActiveThemes(prompt: string): void {
+    const themes = this.extractThemes(prompt);
+    themes.forEach((theme) => this.state.activeThemes.add(theme));
+  }
+
+  private extractThemes(text: string): Set<string> {
+    const themes = new Set<string>();
+    const normalized = text.toLowerCase();
+
+    if (normalized.includes("emergency")) themes.add("emergency");
+    if (normalized.includes("maintenance")) themes.add("maintenance");
+    if (normalized.includes("repair")) themes.add("repair");
+    if (normalized.includes("installation")) themes.add("installation");
+    if (normalized.includes("quote")) themes.add("quote");
+
+    if (normalized.includes("name") || normalized.includes("address")) {
+      themes.add("personal_info");
+    }
+    if (normalized.includes("schedule") || normalized.includes("appointment")) {
+      themes.add("scheduling");
+    }
+
+    return themes;
+  }
+
   private findNodeByCallId(callId: string) {
     return this.conversationTree
       .getAllNodes()
       .find((node) => node.callId === callId);
   }
 
-  /**
-   * Explores the next set of conversation paths based on our discoveries.
-   * This method manages the concurrent exploration of different paths while
-   * staying within our configured limits.
-   */
-  private async exploreNextPaths(): Promise<void> {
-    if (!this.state.isRunning) return;
-
-    try {
-      const unexploredNodes =
-        this.conversationTree.getNodesWithUnexploredPaths();
-
-      for (const node of unexploredNodes) {
-        if (this.state.activeCallCount >= this.config.maxConcurrentCalls) {
-          logger.info("Reached maximum concurrent conversations", {
-            activeCount: this.state.activeCallCount,
-            maximum: this.config.maxConcurrentCalls,
-          });
-          break;
-        }
-
-        const nextPrompt = node.potentialPrompts?.[0];
-        if (!nextPrompt) continue;
-
-        // Remove this prompt from our queue since we're about to use it
-        node.potentialPrompts = node.potentialPrompts?.slice(1);
-
-        try {
-          // Start a new conversation with this prompt
-          const callId = await this.callManager.startCall(
-            this.config.phoneNumber,
-            nextPrompt,
-            this.config.webhookUrl
-          );
-
-          // Add this new conversation path to our tree
-          const newNode = this.conversationTree.addNode(
-            node.id,
-            nextPrompt,
-            callId
-          );
-
-          this.state.activeCallCount++;
-          this.state.lastUpdateTimestamp = new Date();
-
-          // Update visualization
-          this.visualizer.visualizeTree(this.conversationTree);
-          this.visualizer.visualizeProgress(this.state);
-
-          logger.info("Started exploration of new conversation path", {
-            parentNodeId: node.id,
-            newNodeId: newNode.id,
-            callId,
-            promptPreview: nextPrompt.substring(0, 50),
-          });
-
-          // Small delay between calls to avoid overwhelming the system
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        } catch (error) {
-          logger.error("Failed to explore conversation path", {
-            error: error instanceof Error ? error.message : "Unknown error",
-            parentNodeId: node.id,
-            promptPreview: nextPrompt.substring(0, 50),
-          });
-
-          // Return the prompt to the queue for potential retry
-          if (node.potentialPrompts) {
-            node.potentialPrompts.push(nextPrompt);
-          } else {
-            node.potentialPrompts = [nextPrompt];
-          }
-        }
-      }
-
-      logger.info("Completed exploration cycle", {
-        activeConversations: this.state.activeCallCount,
-        completedConversations: this.state.completedCallCount,
-        remainingUnexplored: unexploredNodes.length,
-      });
-    } catch (error) {
-      logger.error("Error in path exploration process", {
-        error: error instanceof Error ? error.message : "Unknown error",
-        activeCallCount: this.state.activeCallCount,
-      });
-    }
-  }
-
-  /**
-   * Handles failed calls by implementing retry logic up to a maximum
-   * number of attempts.
-   */
   public async handleCallFailed(callId: string): Promise<void> {
     try {
       const node = this.findNodeByCallId(callId);
-
       if (node) {
         const retryCount = node.retryCount || 0;
         if (retryCount < this.MAX_RETRY_ATTEMPTS) {
@@ -280,12 +328,11 @@ Your goal is to understand what services they offer and how they handle initial 
             retryAttempt: retryCount + 1,
           });
 
-          const newCallId = await this.callManager.startCall(
-            this.config.phoneNumber,
-            node.systemPrompt,
-            this.config.webhookUrl
+          await new Promise((resolve) =>
+            setTimeout(resolve, this.config.retryDelayMs * (retryCount + 1))
           );
 
+          const newCallId = await this.initiateCall(node.systemPrompt);
           node.callId = newCallId;
           node.retryCount = retryCount + 1;
         } else {
@@ -307,20 +354,16 @@ Your goal is to understand what services they offer and how they handle initial 
     }
   }
 
-  /**
-   * Gets the current state of the discovery process including
-   * progress metrics and tree summary.
-   */
   public getDiscoveryState() {
     return {
       ...this.state,
       treeSummary: this.conversationTree.getTreeSummary(),
+      queueLength: this.callQueue.length,
+      exploredThemes: Array.from(this.state.exploredThemes),
+      activeThemes: Array.from(this.state.activeThemes),
     };
   }
 
-  /**
-   * Stops the discovery process gracefully.
-   */
   public stopDiscovery(): void {
     this.state.isRunning = false;
     logger.info("Discovery process stopped", this.getDiscoveryState());

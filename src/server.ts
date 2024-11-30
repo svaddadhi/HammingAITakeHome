@@ -1,5 +1,3 @@
-// src/server.ts
-
 import express, { Express, Request, Response, NextFunction } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -9,10 +7,6 @@ interface AppError extends Error {
   status?: number;
 }
 
-/**
- * Server class provides the HTTP server functionality for our discovery system.
- * It handles incoming webhook requests and provides appropriate security measures.
- */
 class Server {
   private app: Express;
   private port: number;
@@ -23,14 +17,9 @@ class Server {
     this.configureMiddleware();
   }
 
-  /**
-   * Configures Express middleware for security and request handling
-   */
   private configureMiddleware(): void {
-    // Parse JSON request bodies
     this.app.use(express.json());
 
-    // Configure CORS for security
     this.app.use(
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(",") || "*",
@@ -39,10 +28,8 @@ class Server {
       })
     );
 
-    // Add security headers
     this.app.use(helmet());
 
-    // Log incoming requests
     this.app.use((req: Request, res: Response, next: NextFunction) => {
       logger.info("Incoming request", {
         method: req.method,
@@ -54,18 +41,13 @@ class Server {
     });
   }
 
-  /**
-   * Configures error handling middleware
-   */
   private configureErrorHandling(): void {
-    // Handle 404 errors
     this.app.use((req: Request, res: Response, next: NextFunction) => {
       const error: AppError = new Error("Not Found");
       error.status = 404;
       next(error);
     });
 
-    // Handle all other errors
     this.app.use(
       (error: AppError, req: Request, res: Response, next: NextFunction) => {
         logger.error("Server error", {
@@ -86,16 +68,12 @@ class Server {
     );
   }
 
-  /**
-   * Adds a new route handler to the server
-   */
   public addRoute(path: string, router: express.Router): void {
     logger.info(`Adding route handler`, {
       path,
       timestamp: new Date().toISOString(),
     });
 
-    // Add request logging for this route
     this.app.use(path, (req, res, next) => {
       logger.info(`Request received at ${path}`, {
         method: req.method,
@@ -108,11 +86,7 @@ class Server {
     this.app.use(path, router);
   }
 
-  /**
-   * Starts the server listening for requests
-   */
   public async start(): Promise<void> {
-    // Add error handling after all routes are configured
     this.configureErrorHandling();
 
     try {
