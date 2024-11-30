@@ -1,120 +1,171 @@
 import axios, { AxiosResponse } from "axios";
-import logger from "../utils/logger.js";
 import axiosRetry from "axios-retry";
+import logger from "../utils/logger.js";
 
+// Configure axios retry logic for resilient API calls
 axiosRetry(axios, {
   retries: 3,
   retryDelay: axiosRetry.exponentialDelay,
+  retryCondition: (error) => {
+    return (
+      axiosRetry.isNetworkOrIdempotentRequestError(error) ||
+      (error.response?.status ?? 0) >= 500
+    );
+  },
 });
 
-interface CallRequest {
-  phone_number: string;
-  prompt: string;
-  webhook_url: string;
-}
 interface CallResponse {
   id: string;
+  status?: string;
 }
 
 /**
- * Manages voice agent calls and recording retrieval
- * @class CallManager
+ * CallManager handles interactions with the voice agent API.
+ * It manages initiating calls and retrieving recordings, with built-in
+ * retry logic for resilient operation.
  */
 export class CallManager {
+  private baseUrl: string;
+  private token: string;
+
   /**
    * Creates a new instance of CallManager
-   * @param baseUrl - Base URL for the API
-   * @param token - Authentication token
-   * @throws Error if baseUrl or token is missing
+   * @param baseUrl - Base URL for the voice agent API
+   * @param token - Authentication token for API access
+   * @throws Error if required parameters are missing
    */
-  baseUrl: string;
-  token: string;
   constructor(baseUrl: string, token: string) {
     if (!baseUrl || !token) {
-      throw new Error("baseUrl and token are reuquired");
+      throw new Error("baseUrl and token are required");
     }
 
     this.baseUrl = baseUrl;
     this.token = token;
+
+    logger.info("CallManager initialized", {
+      baseUrl,
+      hasToken: !!token,
+    });
   }
 
   /**
-   * Initiates a call to the specified phone number
-   * @param phoneNumber - Target phone number in E.164 format
-   * @param prompt - System prompt for the voice agent
-   * @param webhookUrl - URL to receive call status updates
-   * @returns Promise containing the call ID
-   * @throws Error if the API call fails or parameters are invalid
+   * Initiates a call to the voice agent
+   * @param phoneNumber - Target phone number to call
+   * @param systemPrompt - System prompt that guides the voice agent's behavior
+   * @param webhookUrl - URL for receiving call status updates
+   * @returns Promise resolving to the call ID
+   * @throws Error if the call fails to initiate
    */
   async startCall(
     phoneNumber: string,
-    prompt: string,
+    systemPrompt: string,
     webhookUrl: string
   ): Promise<string> {
-    const requestData: CallRequest = {
-      phone_number: phoneNumber,
-      prompt,
-      webhook_url: webhookUrl,
-    };
-    if (!phoneNumber || !prompt || !webhookUrl) {
-      throw new Error("Phone number, prompt, and webhook URL are required");
+    if (!phoneNumber || !systemPrompt || !webhookUrl) {
+      const error = new Error("Required parameters missing");
+      logger.error("Call initiation failed - parameter validation", {
+        hasPhoneNumber: !!phoneNumber,
+        hasPrompt: !!systemPrompt,
+        hasWebhookUrl: !!webhookUrl,
+        error: error.message,
+      });
+      throw error;
     }
+
     try {
-      logger.info("Initiating voice agent call", { phoneNumber, webhookUrl });
       const response: AxiosResponse<CallResponse> = await axios.post(
         `${this.baseUrl}/start-call`,
-        requestData,
+        {
+          phone_number: phoneNumber,
+          prompt: systemPrompt,
+          webhook_url: webhookUrl,
+        },
         {
           headers: {
             Authorization: `Bearer ${this.token}`,
             "Content-Type": "application/json",
           },
+          timeout: 10000, // 10 second timeout
         }
       );
 
       logger.info("Call initiated successfully", {
         callId: response.data.id,
         phoneNumber,
+        responseStatus: response.status,
       });
+
       return response.data.id;
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to initiate call", {
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: errorMessage,
         phoneNumber,
+        axiosError: axios.isAxiosError(error)
+          ? {
+              status: error.response?.status,
+              statusText: error.response?.statusText,
+              data: error.response?.data,
+            }
+          : undefined,
       });
+
       throw new Error(
-        `Failed to initiate call to ${phoneNumber}: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
+        `Failed to initiate call to ${phoneNumber}: ${errorMessage}`
       );
     }
   }
 
-  async retrieveRecording(callId: string): Promise<Blob> {
+  /**
+   * Retrieves the recording for a completed call
+   * @param callId - ID of the call to retrieve
+   * @returns Promise resolving to the recording buffer
+   * @throws Error if the recording cannot be retrieved
+   */
+  async retrieveRecording(callId: string): Promise<Buffer> {
     try {
-      logger.info("Retrieving the recording", { id: callId });
+      logger.info("Retrieving recording", {
+        callId,
+        timestamp: new Date().toISOString(),
+      });
+
       const response: AxiosResponse = await axios.get(
-        "https://app.hamming.ai/api/media/exercise",
+        `${this.baseUrl.replace(
+          "/rest/exercise",
+          ""
+        )}/media/exercise?id=${callId}`,
         {
-          params: { id: callId },
-          responseType: "blob",
+          responseType: "arraybuffer",
           headers: {
             Authorization: `Bearer ${this.token}`,
           },
+          timeout: 15000, // 15 second timeout for retrieving recordings
         }
       );
-      logger.info("Successfully retrieved recording");
-      return response.data;
-    } catch (error) {
-      logger.error("Failed to retrieve recording", {
-        error: error instanceof Error ? error.message : "Unknown error",
+
+      logger.info("Successfully retrieved recording", {
+        callId,
+        contentLength: response.data.length,
+        contentType: response.headers["content-type"],
       });
 
-      throw new Error(
-        `Failed to retrieve recording: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
-      );
+      return Buffer.from(response.data);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      logger.error("Failed to retrieve recording", {
+        error: errorMessage,
+        callId,
+        axiosError: axios.isAxiosError(error)
+          ? {
+              status: error.response?.status,
+              statusText: error.response?.statusText,
+            }
+          : undefined,
+      });
+
+      throw new Error(`Failed to retrieve recording: ${errorMessage}`);
     }
   }
 }

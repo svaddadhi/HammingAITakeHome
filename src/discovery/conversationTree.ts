@@ -1,5 +1,8 @@
+// src/discovery/conversationTree.ts
+
 import logger from "../utils/logger.js";
 
+// We define the possible states a node can be in during exploration
 enum NodeStatus {
   UNEXPLORED = "unexplored",
   IN_PROGRESS = "in-progress",
@@ -7,25 +10,30 @@ enum NodeStatus {
   FAILED = "failed",
 }
 
+// We've simplified the node interface to focus on essential properties
 interface CallNode {
   id: string;
-  previousPrompt: string;
+  // The system prompt that was used to initiate this conversation path
+  systemPrompt: string;
+  // The transcribed response received from the agent
   responseReceived: string;
+  // ID of the call associated with this node
   callId: string;
   status: NodeStatus;
   children: CallNode[];
   parentId: string | null;
   timestamp: Date;
   depth: number;
-  potentialPaths?: string[];
+  // Potential paths identified for further exploration
+  potentialPrompts?: string[];
   retryCount: number;
 }
 
 /**
- * ConversationTree manages the structure and operations of the voice agent
- * conversation discovery process. It tracks all explored and unexplored paths,
- * maintains relationships between conversation nodes, and provides methods
- * for traversing and updating the conversation tree.
+ * ConversationTree manages the structure and traversal of our voice agent
+ * conversation discovery process. It maintains a tree where each node represents
+ * a specific interaction with the voice agent, tracking how different system
+ * prompts lead to different conversation paths.
  */
 export class ConversationTree {
   private nodes: Map<string, CallNode>;
@@ -39,21 +47,18 @@ export class ConversationTree {
   }
 
   /**
-   * Initializes the tree with a root node
-   * @param prompt Initial prompt used to start the conversation
-   * @param callId ID of the initial call
-   * @returns The created root node
+   * Initializes the tree with a root node representing our first interaction
    */
-  public initializeRoot(prompt: string, callId: string): CallNode {
+  public initializeRoot(systemPrompt: string, callId: string): CallNode {
     if (this.rootNode) {
       throw new Error("Tree already initialized");
     }
 
     const rootNode: CallNode = {
       id: "root",
-      previousPrompt: prompt,
-      responseReceived: "", // Will be updated when response is received
-      callId: callId,
+      systemPrompt,
+      responseReceived: "",
+      callId,
       status: NodeStatus.IN_PROGRESS,
       children: [],
       parentId: null,
@@ -68,19 +73,20 @@ export class ConversationTree {
     logger.info("Conversation tree initialized with root node", {
       nodeId: rootNode.id,
       callId,
+      systemPrompt: systemPrompt.substring(0, 50),
     });
 
     return rootNode;
   }
 
   /**
-   * Adds a new node to the tree
-   * @param parentId ID of the parent node
-   * @param prompt Prompt used for this node
-   * @param callId Associated call ID
-   * @returns The newly created node
+   * Adds a new conversation path to explore by creating a new node
    */
-  public addNode(parentId: string, prompt: string, callId: string): CallNode {
+  public addNode(
+    parentId: string,
+    systemPrompt: string,
+    callId: string
+  ): CallNode {
     const parentNode = this.nodes.get(parentId);
     if (!parentNode) {
       throw new Error(`Parent node ${parentId} not found`);
@@ -92,12 +98,12 @@ export class ConversationTree {
 
     const newNode: CallNode = {
       id: `node_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      previousPrompt: prompt,
+      systemPrompt,
       responseReceived: "",
-      callId: callId,
+      callId,
       status: NodeStatus.IN_PROGRESS,
       children: [],
-      parentId: parentId,
+      parentId,
       timestamp: new Date(),
       depth: parentNode.depth + 1,
       retryCount: 0,
@@ -106,25 +112,23 @@ export class ConversationTree {
     parentNode.children.push(newNode);
     this.nodes.set(newNode.id, newNode);
 
-    logger.info("Added new node to conversation tree", {
+    logger.info("Added new conversation path node", {
       nodeId: newNode.id,
       parentId,
       depth: newNode.depth,
+      systemPromptPreview: systemPrompt.substring(0, 50),
     });
 
     return newNode;
   }
 
   /**
-   * Updates a node with response information
-   * @param nodeId ID of the node to update
-   * @param response Response received from the voice agent
-   * @param potentialPaths Potential follow-up prompts identified
+   * Updates a node with the response received from the voice agent
    */
   public updateNodeWithResponse(
     nodeId: string,
     response: string,
-    potentialPaths?: string[]
+    potentialPrompts?: string[]
   ): void {
     const node = this.nodes.get(nodeId);
     if (!node) {
@@ -132,19 +136,18 @@ export class ConversationTree {
     }
 
     node.responseReceived = response;
-    node.potentialPaths = potentialPaths;
+    node.potentialPrompts = potentialPrompts;
     node.status = NodeStatus.COMPLETED;
 
-    logger.info("Updated node with response", {
+    logger.info("Updated node with agent response", {
       nodeId,
-      pathsIdentified: potentialPaths?.length ?? 0,
+      responsePreview: response.substring(0, 50),
+      potentialPathsCount: potentialPrompts?.length ?? 0,
     });
   }
 
   /**
-   * Updates the status of a node
-   * @param nodeId ID of the node to update
-   * @param status New status
+   * Updates the status of a conversation path
    */
   public updateNodeStatus(nodeId: string, status: NodeStatus): void {
     const node = this.nodes.get(nodeId);
@@ -153,26 +156,27 @@ export class ConversationTree {
     }
 
     node.status = status;
-    logger.info("Updated node status", { nodeId, status });
+    logger.info("Updated conversation path status", {
+      nodeId,
+      status,
+      depth: node.depth,
+    });
   }
 
   /**
-   * Gets all nodes that have unexplored potential paths
-   * @returns Array of nodes with unexplored paths
+   * Finds all nodes that have unexplored potential conversation paths
    */
   public getNodesWithUnexploredPaths(): CallNode[] {
     return Array.from(this.nodes.values()).filter(
       (node) =>
         node.status === NodeStatus.COMPLETED &&
-        node.potentialPaths?.length > 0 &&
+        node.potentialPrompts?.length > 0 &&
         node.depth < this.maxDepth
     );
   }
 
   /**
-   * Gets the complete path from root to a specific node
-   * @param nodeId ID of the target node
-   * @returns Array of nodes representing the path
+   * Gets the complete conversation history from root to a specific node
    */
   public getPathToNode(nodeId: string): CallNode[] {
     const path: CallNode[] = [];
@@ -181,26 +185,15 @@ export class ConversationTree {
     while (currentNode) {
       path.unshift(currentNode);
       currentNode = currentNode.parentId
-        ? this.nodes.get(currentNode.parentId)
-        : null;
+        ? this.nodes.get(currentNode.parentId) ?? undefined
+        : undefined;
     }
 
     return path;
   }
 
   /**
-   * Gets a node by its ID
-   * @param nodeId ID of the node to retrieve
-   * @returns The requested node or null if not found
-   */
-  public getNode(nodeId: string): CallNode | null {
-    return this.nodes.get(nodeId) || null;
-  }
-
-  /**
-   * Gets all nodes at a specific depth in the tree
-   * @param depth The depth to search at
-   * @returns Array of nodes at the specified depth
+   * Gets all nodes at a specific depth in our conversation exploration
    */
   public getNodesAtDepth(depth: number): CallNode[] {
     return Array.from(this.nodes.values()).filter(
@@ -209,8 +202,7 @@ export class ConversationTree {
   }
 
   /**
-   * Gets a summary of the tree's current state
-   * @returns Object containing tree statistics
+   * Provides a summary of our conversation exploration progress
    */
   public getTreeSummary() {
     const totalNodes = this.nodes.size;
@@ -222,16 +214,15 @@ export class ConversationTree {
     );
 
     return {
-      totalNodes,
-      completedNodes,
+      totalPaths: totalNodes,
+      completedPaths: completedNodes,
       maxDepthReached,
       maxAllowedDepth: this.maxDepth,
     };
   }
 
   /**
-   * Gets all nodes in the tree
-   * @returns Array of all nodes
+   * Gets all explored conversation paths
    */
   public getAllNodes(): CallNode[] {
     return Array.from(this.nodes.values());

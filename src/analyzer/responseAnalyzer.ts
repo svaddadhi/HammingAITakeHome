@@ -1,4 +1,7 @@
+// src/analyzer/responseAnalyzer.ts
+
 import logger from "../utils/logger.js";
+import { generateResponses } from "../utils/openai.js";
 
 interface AnalysisResult {
   identifiedPaths: string[];
@@ -7,55 +10,99 @@ interface AnalysisResult {
 }
 
 /**
- * ResponseAnalyzer processes transcribed voice agent responses to identify
- * potential conversation paths and determine appropriate follow-up prompts.
- * It uses simple heuristics to identify meaningful paths while avoiding
- * redundant explorations.
+ * ResponseAnalyzer handles the analysis of voice agent responses and generates
+ * appropriate system prompts for exploring different conversation paths.
+ * It adapts its analysis based on the detected business context and
+ * conversation state.
  */
 export class ResponseAnalyzer {
-  // Common phrases that indicate options or choices
-  private static readonly OPTION_INDICATORS = [
-    "would you like",
-    "you can",
-    "options are",
-    "we offer",
-    "we can",
-    "choose",
-    "select",
-    "either",
-  ];
+  // Tracks the type of business we're interacting with
+  private businessContext: string = "";
 
-  // Phrases that might indicate a terminal state
+  // Universal indicators for conversation end points
   private static readonly TERMINAL_INDICATORS = [
     "goodbye",
     "thank you for calling",
     "have a nice day",
     "is there anything else",
     "end of our call",
+    "have a great",
+    "bye",
   ];
 
+  // Universal markers for when the agent is expecting a response
+  private static readonly CONVERSATION_INDICATORS = [
+    "would you like",
+    "can i help",
+    "how can i",
+    "what would you",
+    "are you looking",
+    "would you prefer",
+    "do you need",
+    "may i",
+    "let me",
+    "i can",
+    "we have",
+    "we offer",
+    "is there",
+    "could you",
+    "what type",
+    "which option",
+    "speaking",
+    "how may i",
+    "how can i assist",
+  ];
+
+  constructor() {
+    this.businessContext = "";
+  }
+
   /**
-   * Analyzes a transcribed response to identify potential conversation paths
-   * @param response - Transcribed text from the voice agent
-   * @returns Analysis result containing identified paths and state information
+   * Analyzes a voice agent's response to identify potential conversation paths
+   * and generates appropriate system prompts for exploration
    */
   public async analyzeResponse(response: string): Promise<AnalysisResult> {
     try {
       const normalizedResponse = response.toLowerCase();
 
-      // Check for terminal state
-      const isTerminalState = this.isTerminalState(normalizedResponse);
+      // Detect business type if not already set
+      if (!this.businessContext) {
+        this.businessContext = this.detectBusinessType(response);
+        logger.info("Detected business type", {
+          businessContext: this.businessContext,
+          responsePreview: response.substring(0, 50),
+        });
+      }
 
-      // Identify potential paths
-      const identifiedPaths = await this.identifyPaths(normalizedResponse);
+      // Handle different types of responses
+      let identifiedPaths: string[] = [];
+      let isTerminalState = false;
 
-      // Calculate confidence based on identified patterns
-      const confidence = this.calculateConfidence(identifiedPaths);
+      // For initial greeting, generate context-aware initial prompts
+      if (this.isInitialGreeting(normalizedResponse)) {
+        identifiedPaths = await this.generateInitialSystemPrompts();
+        isTerminalState = false;
+      } else {
+        // For ongoing conversation, analyze response and generate follow-up prompts
+        identifiedPaths = await this.generateFollowUpPrompts(response);
+        isTerminalState = this.isTerminalState(
+          normalizedResponse,
+          identifiedPaths.length > 0
+        );
+      }
 
-      logger.info("Response analysis completed", {
+      const confidence = this.calculateConfidence(
+        identifiedPaths,
+        normalizedResponse
+      );
+
+      logger.info("Completed response analysis", {
+        businessType: this.businessContext,
         pathsIdentified: identifiedPaths.length,
         isTerminal: isTerminalState,
         confidence,
+        firstPath: identifiedPaths[0]?.substring(0, 30),
+        responsePreview: response.substring(0, 50),
       });
 
       return {
@@ -66,114 +113,191 @@ export class ResponseAnalyzer {
     } catch (error) {
       logger.error("Error analyzing response", {
         error: error instanceof Error ? error.message : "Unknown error",
-        response: response.substring(0, 100), // Log first 100 chars for context
+        response: response.substring(0, 100),
       });
-      throw error;
+      // Return safe default values on error
+      return {
+        identifiedPaths: [this.createDefaultSystemPrompt()],
+        isTerminalState: false,
+        confidence: 0.3,
+      };
     }
   }
 
   /**
-   * Generates appropriate follow-up prompts based on identified paths
-   * @param paths - Array of identified potential paths
-   * @returns Array of follow-up prompts
+   * Detects the type of business from the response
    */
-  public generateFollowUpPrompts(paths: string[]): string[] {
-    return paths.map((path) => {
-      // Generate contextually appropriate prompts based on the path
-      if (path.includes("schedule") || path.includes("appointment")) {
-        return "I'd like to schedule an appointment";
-      }
-      if (path.includes("pricing") || path.includes("cost")) {
-        return "Can you tell me about your pricing?";
-      }
-      if (path.includes("service") || path.includes("repair")) {
-        return "What services do you offer?";
-      }
-      // Default to a simple selection of the path
-      return `I'm interested in ${path}`;
-    });
+  private detectBusinessType(response: string): string {
+    const normalizedResponse = response.toLowerCase();
+
+    if (
+      normalizedResponse.includes("air conditioning") ||
+      normalizedResponse.includes("plumbing") ||
+      normalizedResponse.includes("hvac") ||
+      normalizedResponse.includes("heating")
+    ) {
+      return "hvac_plumbing";
+    } else if (
+      normalizedResponse.includes("auto") ||
+      normalizedResponse.includes("car") ||
+      normalizedResponse.includes("dealership") ||
+      normalizedResponse.includes("vehicle")
+    ) {
+      return "auto_dealership";
+    }
+
+    return "general_business";
   }
 
   /**
-   * Identifies potential conversation paths from the response
-   * @param response - Normalized response text
-   * @returns Array of identified paths
-   * @private
+   * Generates initial system prompts based on the detected business context
    */
-  private async identifyPaths(response: string): Promise<string[]> {
-    const paths = new Set<string>();
-
-    // Check for direct option indicators
-    for (const indicator of ResponseAnalyzer.OPTION_INDICATORS) {
-      if (response.includes(indicator)) {
-        const startIndex = response.indexOf(indicator) + indicator.length;
-        const segment = response.slice(startIndex, startIndex + 100); // Look at next 100 chars
-
-        // Split by common delimiters and clean up
-        const options = segment
-          .split(/[,.]/)
-          .map((opt) => opt.trim())
-          .filter((opt) => opt.length > 3) // Filter out very short segments
-          .filter((opt) => !opt.startsWith("or ") && !opt.startsWith("and ")); // Clean up connectors
-
-        options.forEach((opt) => paths.add(opt));
-      }
-    }
-
-    // Look for specific service-related keywords
-    const serviceKeywords = [
-      "repair",
-      "maintenance",
-      "installation",
-      "service",
-      "appointment",
-    ];
-    for (const keyword of serviceKeywords) {
-      if (response.includes(keyword)) {
-        const words = response.split(" ");
-        const keywordIndex = words.findIndex((w) => w.includes(keyword));
-        if (keywordIndex >= 0) {
-          // Look at words around the keyword
-          const contextRange = 3; // Words before and after
-          const start = Math.max(0, keywordIndex - contextRange);
-          const end = Math.min(words.length, keywordIndex + contextRange + 1);
-          const context = words.slice(start, end).join(" ");
-          paths.add(context.trim());
-        }
-      }
-    }
-
-    return Array.from(paths);
-  }
-
-  /**
-   * Checks if the response indicates a terminal state
-   * @param response - Normalized response text
-   * @returns boolean indicating if this is a terminal state
-   * @private
-   */
-  private isTerminalState(response: string): boolean {
-    return ResponseAnalyzer.TERMINAL_INDICATORS.some((indicator) =>
-      response.includes(indicator)
+  private async generateInitialSystemPrompts(): Promise<string[]> {
+    const scenarios = this.getBusinessScenarios(this.businessContext);
+    const prompts = scenarios.map((scenario) =>
+      this.createSystemPrompt(scenario)
     );
+
+    logger.info("Generated initial system prompts", {
+      businessContext: this.businessContext,
+      promptCount: prompts.length,
+    });
+
+    return prompts;
+  }
+
+  /**
+   * Gets relevant business scenarios based on the business type
+   */
+  private getBusinessScenarios(businessType: string): string[] {
+    switch (businessType) {
+      case "hvac_plumbing":
+        return [
+          "AC not cooling - emergency service needed",
+          "Schedule routine AC maintenance",
+          "Leaking pipe emergency",
+          "Water heater replacement quote",
+          "New AC installation consultation",
+        ];
+      case "auto_dealership":
+        return [
+          "Interest in new vehicle purchase",
+          "Used car availability check",
+          "Schedule test drive",
+          "Trade-in value inquiry",
+          "Service department appointment",
+        ];
+      default:
+        return ["General service inquiry"];
+    }
+  }
+
+  /**
+   * Creates a formatted system prompt for a specific scenario
+   */
+  private createSystemPrompt(scenario: string): string {
+    return `You are a customer calling about ${scenario}.
+When the agent answers:
+1. Clearly state your needs related to ${scenario}
+2. Answer any questions about your situation naturally
+3. Show interest in scheduling service or getting more information
+4. Be ready to provide basic contact information if asked
+Your goal is to explore the complete service path for ${scenario}.`;
+  }
+
+  /**
+   * Creates a default system prompt for error cases
+   */
+  private createDefaultSystemPrompt(): string {
+    return `You are a customer calling to inquire about available services.
+When the agent answers:
+1. Ask about their main services
+2. Show interest in learning more
+3. Be ready to ask follow-up questions
+Your goal is to understand what services they offer.`;
+  }
+
+  /**
+   * Generates follow-up system prompts based on the agent's response
+   */
+  private async generateFollowUpPrompts(response: string): Promise<string[]> {
+    const hasConversationCues = ResponseAnalyzer.CONVERSATION_INDICATORS.some(
+      (indicator) => response.toLowerCase().includes(indicator)
+    );
+
+    const prompt = `Based on this ${this.businessContext} agent's response: "${response}"
+Generate 3-4 different customer scenarios that would:
+1. Directly engage with the options/questions presented
+2. Explore different service paths
+3. Represent realistic customer situations
+Keep scenarios focused and specific.`;
+
+    const scenarios = await generateResponses(prompt, {
+      temperature: hasConversationCues ? 0.7 : 0.8,
+      maxResponses: hasConversationCues ? 4 : 3,
+    });
+
+    return scenarios.map((scenario) => this.createSystemPrompt(scenario));
+  }
+
+  /**
+   * Checks if the response is an initial greeting
+   */
+  private isInitialGreeting(response: string): boolean {
+    return (
+      response.includes("thank you for calling") ||
+      response.includes("hello") ||
+      response.includes("hi there") ||
+      response.includes("speaking") ||
+      response.includes("welcome to") ||
+      (response.includes("this is") && response.includes("how can i help"))
+    );
+  }
+
+  /**
+   * Determines if the response indicates end of conversation
+   */
+  private isTerminalState(
+    response: string,
+    hasIdentifiedPaths: boolean
+  ): boolean {
+    if (hasIdentifiedPaths) {
+      return false;
+    }
+
+    const hasTerminalIndicators = ResponseAnalyzer.TERMINAL_INDICATORS.some(
+      (indicator) => response.includes(indicator)
+    );
+
+    const hasConversationCues = ResponseAnalyzer.CONVERSATION_INDICATORS.some(
+      (indicator) => response.includes(indicator)
+    );
+
+    return hasTerminalIndicators && !hasConversationCues;
   }
 
   /**
    * Calculates confidence score for the analysis
-   * @param identifiedPaths - Array of identified paths
-   * @returns confidence score between 0 and 1
-   * @private
    */
-  private calculateConfidence(identifiedPaths: string[]): number {
-    // Simple confidence calculation based on number of paths identified
-    // and presence of clear option indicators
-    const pathConfidence = Math.min(identifiedPaths.length * 0.2, 0.8);
-    const hasOptionIndicators = ResponseAnalyzer.OPTION_INDICATORS.some(
-      (indicator) => identifiedPaths.some((path) => path.includes(indicator))
-    );
+  private calculateConfidence(paths: string[], response: string): number {
+    let confidence = Math.min(paths.length * 0.2, 0.8);
 
-    return hasOptionIndicators
-      ? Math.min(pathConfidence + 0.2, 1.0)
-      : pathConfidence;
+    if (this.businessContext !== "general_business") {
+      confidence += 0.1;
+    }
+
+    if (
+      ResponseAnalyzer.CONVERSATION_INDICATORS.some((indicator) =>
+        response.includes(indicator)
+      )
+    ) {
+      confidence += 0.1;
+    }
+
+    if (this.isInitialGreeting(response)) {
+      confidence += 0.1;
+    }
+
+    return Math.min(confidence, 1.0);
   }
 }

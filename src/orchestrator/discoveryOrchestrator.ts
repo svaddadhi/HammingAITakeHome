@@ -1,3 +1,5 @@
+// src/orchestrator/discoveryOrchestrator.ts
+
 import logger from "../utils/logger.js";
 import { CallManager } from "../call-manager/client.js";
 import { ConversationTree } from "../discovery/conversationTree.js";
@@ -21,9 +23,12 @@ interface DiscoveryState {
 }
 
 /**
- * DiscoveryOrchestrator manages the overall process of discovering voice agent capabilities.
- * It coordinates between the CallManager, ConversationTree, and ResponseAnalyzer to
- * systematically explore and document possible conversation paths.
+ * DiscoveryOrchestrator manages the systematic exploration of voice agent capabilities.
+ * It coordinates between different components to:
+ * 1. Initiate conversations with different system prompts
+ * 2. Process agent responses to identify new paths
+ * 3. Build a comprehensive map of possible conversation flows
+ * 4. Track exploration progress and manage concurrent calls
  */
 export class DiscoveryOrchestrator {
   private readonly callManager: CallManager;
@@ -31,8 +36,8 @@ export class DiscoveryOrchestrator {
   private readonly responseAnalyzer: ResponseAnalyzer;
   private readonly config: DiscoveryConfig;
   private state: DiscoveryState;
-  private readonly MAX_RETRY_ATTEMPTS = 3;
   private readonly visualizer: ProgressVisualizer;
+  private readonly MAX_RETRY_ATTEMPTS = 3;
 
   constructor(callManager: CallManager, config: DiscoveryConfig) {
     this.callManager = callManager;
@@ -51,8 +56,9 @@ export class DiscoveryOrchestrator {
   }
 
   /**
-   * Starts the discovery process
-   * Initializes the conversation tree and begins exploring paths
+   * Begins the discovery process by initiating the first conversation
+   * with an initial system prompt. This starts our exploration of the
+   * voice agent's capabilities.
    */
   public async startDiscovery(): Promise<void> {
     if (this.state.isRunning) {
@@ -60,7 +66,7 @@ export class DiscoveryOrchestrator {
     }
 
     try {
-      logger.info("Starting discovery process", {
+      logger.info("Starting voice agent discovery process", {
         phoneNumber: this.config.phoneNumber,
         maxDepth: this.config.maxDepth,
         maxConcurrentCalls: this.config.maxConcurrentCalls,
@@ -69,19 +75,22 @@ export class DiscoveryOrchestrator {
       this.state.isRunning = true;
       this.state.lastUpdateTimestamp = new Date();
 
-      // Start with initial call
+      // Start with initial conversation
+      const initialSystemPrompt = this.createInitialSystemPrompt();
       const callId = await this.callManager.startCall(
         this.config.phoneNumber,
-        this.config.initialPrompt,
+        initialSystemPrompt,
         this.config.webhookUrl
       );
 
-      // Initialize the conversation tree with root node
-      this.conversationTree.initializeRoot(this.config.initialPrompt, callId);
-
+      // Initialize our conversation tree with this first interaction
+      this.conversationTree.initializeRoot(initialSystemPrompt, callId);
       this.state.activeCallCount++;
 
-      logger.info("Initial call placed, awaiting response", { callId });
+      logger.info("Initial conversation started", {
+        callId,
+        systemPromptPreview: initialSystemPrompt.substring(0, 50),
+      });
     } catch (error) {
       this.state.isRunning = false;
       logger.error("Failed to start discovery process", {
@@ -92,55 +101,66 @@ export class DiscoveryOrchestrator {
   }
 
   /**
-   * Processes a completed call and decides on next steps
-   * @param callId ID of the completed call
-   * @param response Transcribed response from the call
+   * Creates the initial system prompt that starts our discovery process.
+   * This prompt is designed to elicit information about available services.
+   */
+  private createInitialSystemPrompt(): string {
+    return `You are a customer making your first call to this business.
+When the agent answers:
+1. Express general interest in learning about their services
+2. Be ready to ask follow-up questions about specific services
+3. Show interest but avoid committing to any service yet
+Your goal is to understand what services they offer and how they handle initial inquiries.`;
+  }
+
+  /**
+   * Processes a completed call by analyzing the response and planning
+   * the next conversations to explore.
    */
   public async handleCallCompleted(
     callId: string,
     response: string
   ): Promise<void> {
     try {
-      // Find the node associated with this call
-      const node = this.conversationTree
-        .getAllNodes()
-        .find((node) => node.callId === callId);
-
+      const node = this.findNodeByCallId(callId);
       if (!node) {
-        throw new Error(`No node found for call ${callId}`);
+        throw new Error(`No conversation node found for call ${callId}`);
       }
 
-      // Analyze the response and update the node
-      const potentialPaths = await this.analyzePath(response);
+      // Analyze the response to identify new conversation paths to explore
+      const analysis = await this.responseAnalyzer.analyzeResponse(response);
       this.conversationTree.updateNodeWithResponse(
         node.id,
         response,
-        potentialPaths
+        analysis.identifiedPaths
       );
 
-      // Update state
+      // Update discovery state
       this.state.activeCallCount--;
       this.state.completedCallCount++;
       this.state.lastUpdateTimestamp = new Date();
 
-      // Add visualization
+      // Visualize our progress
       this.visualizer.visualizeTree(this.conversationTree);
       this.visualizer.visualizeProgress(this.state);
-      this.visualizer.logConversationEvent(node.id, "Call Completed", {
-        response: response.substring(0, 100),
-        potentialPaths: potentialPaths.length,
+      this.visualizer.logConversationEvent(node.id, "Conversation Completed", {
+        responsePreview: response.substring(0, 100),
+        newPathsIdentified: analysis.identifiedPaths.length,
       });
 
-      // Explore new paths if available
-      await this.exploreNextPaths();
+      // Continue exploration with newly discovered paths
+      if (!analysis.isTerminalState) {
+        await this.exploreNextPaths();
+      }
 
-      logger.info("Successfully processed completed call", {
+      logger.info("Successfully processed completed conversation", {
         callId,
         nodeId: node.id,
-        potentialPathsFound: potentialPaths.length,
+        newPathsIdentified: analysis.identifiedPaths.length,
+        isTerminal: analysis.isTerminalState,
       });
     } catch (error) {
-      logger.error("Error processing completed call", {
+      logger.error("Error processing completed conversation", {
         error: error instanceof Error ? error.message : "Unknown error",
         callId,
       });
@@ -149,49 +169,18 @@ export class DiscoveryOrchestrator {
   }
 
   /**
-   * Analyzes a response to identify potential conversation paths
-   * @param response Voice agent's response
-   * @returns Array of potential follow-up prompts
-   * @private
+   * Finds the conversation node associated with a specific call
    */
-  private async analyzePath(response: string): Promise<string[]> {
-    try {
-      const analysis = await this.responseAnalyzer.analyzeResponse(response);
-
-      if (analysis.isTerminalState) {
-        logger.info("Terminal state detected in response");
-        return [];
-      }
-
-      if (analysis.confidence < 0.3) {
-        logger.warn("Low confidence in path analysis", {
-          confidence: analysis.confidence,
-        });
-      }
-
-      // Generate appropriate follow-up prompts based on identified paths
-      const followUpPrompts = this.responseAnalyzer.generateFollowUpPrompts(
-        analysis.identifiedPaths
-      );
-
-      logger.info("Path analysis completed", {
-        identifiedPaths: analysis.identifiedPaths.length,
-        followUpPrompts: followUpPrompts.length,
-        confidence: analysis.confidence,
-      });
-
-      return followUpPrompts;
-    } catch (error) {
-      logger.error("Error in path analysis", {
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-      return []; // Return empty array on error
-    }
+  private findNodeByCallId(callId: string) {
+    return this.conversationTree
+      .getAllNodes()
+      .find((node) => node.callId === callId);
   }
 
   /**
-   * Explores the next available paths in the conversation tree
-   * @private
+   * Explores the next set of conversation paths based on our discoveries.
+   * This method manages the concurrent exploration of different paths while
+   * staying within our configured limits.
    */
   private async exploreNextPaths(): Promise<void> {
     if (!this.state.isRunning) return;
@@ -201,88 +190,106 @@ export class DiscoveryOrchestrator {
         this.conversationTree.getNodesWithUnexploredPaths();
 
       for (const node of unexploredNodes) {
-        // Check if we can make more concurrent calls
         if (this.state.activeCallCount >= this.config.maxConcurrentCalls) {
-          logger.info(
-            "Maximum concurrent calls reached, waiting for completions"
-          );
+          logger.info("Reached maximum concurrent conversations", {
+            activeCount: this.state.activeCallCount,
+            maximum: this.config.maxConcurrentCalls,
+          });
           break;
         }
 
-        // Get the next prompt to try
-        const nextPrompt = node.potentialPaths?.[0];
+        const nextPrompt = node.potentialPrompts?.[0];
         if (!nextPrompt) continue;
 
-        // Remove this prompt from potential paths
-        node.potentialPaths = node.potentialPaths?.slice(1);
+        // Remove this prompt from our queue since we're about to use it
+        node.potentialPrompts = node.potentialPrompts?.slice(1);
 
         try {
-          // Make the call
+          // Start a new conversation with this prompt
           const callId = await this.callManager.startCall(
             this.config.phoneNumber,
             nextPrompt,
             this.config.webhookUrl
           );
 
-          // Add new node to tree
-          this.conversationTree.addNode(node.id, nextPrompt, callId);
+          // Add this new conversation path to our tree
+          const newNode = this.conversationTree.addNode(
+            node.id,
+            nextPrompt,
+            callId
+          );
+
           this.state.activeCallCount++;
           this.state.lastUpdateTimestamp = new Date();
 
-          // Add visualization update
+          // Update visualization
           this.visualizer.visualizeTree(this.conversationTree);
           this.visualizer.visualizeProgress(this.state);
 
-          logger.info("Started exploration of new path", {
+          logger.info("Started exploration of new conversation path", {
             parentNodeId: node.id,
-            newCallId: callId,
-            prompt: nextPrompt,
+            newNodeId: newNode.id,
+            callId,
+            promptPreview: nextPrompt.substring(0, 50),
           });
+
+          // Small delay between calls to avoid overwhelming the system
+          await new Promise((resolve) => setTimeout(resolve, 500));
         } catch (error) {
-          logger.error("Failed to explore path", {
+          logger.error("Failed to explore conversation path", {
             error: error instanceof Error ? error.message : "Unknown error",
             parentNodeId: node.id,
-            prompt: nextPrompt,
+            promptPreview: nextPrompt.substring(0, 50),
           });
+
+          // Return the prompt to the queue for potential retry
+          if (node.potentialPrompts) {
+            node.potentialPrompts.push(nextPrompt);
+          } else {
+            node.potentialPrompts = [nextPrompt];
+          }
         }
       }
+
+      logger.info("Completed exploration cycle", {
+        activeConversations: this.state.activeCallCount,
+        completedConversations: this.state.completedCallCount,
+        remainingUnexplored: unexploredNodes.length,
+      });
     } catch (error) {
-      logger.error("Error exploring next paths", {
+      logger.error("Error in path exploration process", {
         error: error instanceof Error ? error.message : "Unknown error",
+        activeCallCount: this.state.activeCallCount,
       });
     }
   }
 
   /**
-   * Handles failed calls
-   * @param callId ID of the failed call
+   * Handles failed calls by implementing retry logic up to a maximum
+   * number of attempts.
    */
   public async handleCallFailed(callId: string): Promise<void> {
     try {
-      const node = this.conversationTree
-        .getAllNodes()
-        .find((node) => node.callId === callId);
+      const node = this.findNodeByCallId(callId);
 
       if (node) {
-        // Implement retry logic
         const retryCount = node.retryCount || 0;
         if (retryCount < this.MAX_RETRY_ATTEMPTS) {
-          logger.info("Retrying failed call", {
+          logger.info("Retrying failed conversation", {
             callId,
-            retryCount: retryCount + 1,
+            retryAttempt: retryCount + 1,
           });
 
           const newCallId = await this.callManager.startCall(
             this.config.phoneNumber,
-            node.previousPrompt,
+            node.systemPrompt,
             this.config.webhookUrl
           );
 
-          // Update node with new call ID and increment retry count
           node.callId = newCallId;
           node.retryCount = retryCount + 1;
         } else {
-          logger.warn("Maximum retry attempts reached for call", {
+          logger.warn("Maximum retry attempts reached", {
             callId,
             maxAttempts: this.MAX_RETRY_ATTEMPTS,
           });
@@ -290,7 +297,6 @@ export class DiscoveryOrchestrator {
         }
       }
 
-      // Update state
       this.state.activeCallCount--;
       this.state.lastUpdateTimestamp = new Date();
     } catch (error) {
@@ -302,7 +308,8 @@ export class DiscoveryOrchestrator {
   }
 
   /**
-   * Gets the current state of the discovery process
+   * Gets the current state of the discovery process including
+   * progress metrics and tree summary.
    */
   public getDiscoveryState() {
     return {
@@ -312,7 +319,7 @@ export class DiscoveryOrchestrator {
   }
 
   /**
-   * Stops the discovery process
+   * Stops the discovery process gracefully.
    */
   public stopDiscovery(): void {
     this.state.isRunning = false;
